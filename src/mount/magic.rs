@@ -26,6 +26,7 @@ fn collect_module_files(module_paths: &[PathBuf], extra_partitions: &[String]) -
     let mut root = Node::new_root("");
     let mut system = Node::new_root("system");
     let mut has_file = false;
+
     const ROOT_PARTITIONS: [&str; 4] = [
         "vendor",
         "system_ext",
@@ -51,7 +52,6 @@ fn collect_module_files(module_paths: &[PathBuf], extra_partitions: &[String]) -
         for partition in ROOT_PARTITIONS {
             let mod_part = path.join(partition);
             if mod_part.is_dir() {
-                // Force collect into 'system' node, even if it is at module root
                 let node = system.children.entry(partition.to_string())
                     .or_insert_with(|| Node::new_root(partition));
                 
@@ -71,8 +71,10 @@ fn collect_module_files(module_paths: &[PathBuf], extra_partitions: &[String]) -
 
             let path_of_root = Path::new("/").join(partition);
             if path_of_root.exists() {
+                // Keep in system node
             }
         }
+
         root.children.insert("system".to_string(), system);
         Ok(Some(root))
     } else {
@@ -223,7 +225,7 @@ where
                         }
                     };
                     if need {
-                        if current.module_path.is_none() {
+                        if current.module_path.is_none() && !path.exists() {
                             log::error!(
                                 "cannot create tmpfs on {}, ignore: {name}",
                                 path.display()
