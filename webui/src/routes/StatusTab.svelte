@@ -8,6 +8,7 @@
     store.loadStatus();
   });
   let displayPartitions = $derived([...new Set([...BUILTIN_PARTITIONS, ...store.config.partitions])]);
+  let storageLabel = $derived(store.storage.type === 'tmpfs' ? store.systemInfo.mountBase : store.L.status.storageDesc);
 </script>
 <div class="dashboard-grid">
   <div class="storage-card">
@@ -28,7 +29,7 @@
       <div class="progress-fill" style="width: {store.storage.percent}"></div>
     </div>
     <div class="storage-details">
-      <span>{store.L.status.storageDesc}</span>
+      <span>{storageLabel}</span>
       <span>{store.storage.used} / {store.storage.size}</span>
     </div>
   </div>
