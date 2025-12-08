@@ -1,5 +1,6 @@
-## v1.1.0-r1
+## v1.1.0-r2
 
-Changes since v1.0.3-r1:
-* webui: Final fixes, exist bugs will not be fix from here.
-* chore(release): bump version to v1.0.3-r1 [skip ci]
+Changes since v1.1.0-r1:
+* fix: version code fixes
+* feat(webui): display real module version from module.prop in InfoTab
+* chore(release): bump version to v1.1.0-r1 [skip ci]
