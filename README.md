@@ -134,6 +134,7 @@ The build script compiles the following architectures by default:
 ## 🤝 Contributions & Credits
 
 * Thanks to all contributors in the open-source community.
+* Our sister project [Hymo](https://github.com/Anatdx/hymo)
 * This project utilizes excellent open-source libraries such as `rustix`, `clap`, `serde`, and `svelte`.
 
 ## 📄 License
