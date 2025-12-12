@@ -3,41 +3,50 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use rayon::prelude::*;
 use walkdir::WalkDir;
+use rustix::mount::UnmountFlags;
+
 use crate::{
     conf::config, 
     mount::{magic, overlay, hymofs::HymoFs}, 
     utils,
     core::planner::MountPlan
 };
+
 pub struct ExecutionResult {
     pub overlay_module_ids: Vec<String>,
     pub hymo_module_ids: Vec<String>,
     pub magic_module_ids: Vec<String>,
 }
+
 pub enum DiagnosticLevel {
     #[allow(dead_code)]
     Info,
     Warning,
     Critical,
 }
+
 pub struct DiagnosticIssue {
     pub level: DiagnosticLevel,
     pub context: String,
     pub message: String,
 }
+
 fn extract_id(path: &Path) -> Option<String> {
     path.parent()
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
 }
+
 fn extract_module_root(partition_path: &Path) -> Option<PathBuf> {
     partition_path.parent().map(|p| p.to_path_buf())
 }
+
 struct OverlayResult {
     magic_roots: Vec<PathBuf>,
     fallback_ids: Vec<String>,
     success_records: Vec<(PathBuf, String)>,
 }
+
 pub fn diagnose_plan(plan: &MountPlan) -> Vec<DiagnosticIssue> {
     let mut issues = Vec::new();
     for op in &plan.overlay_ops {
@@ -81,15 +90,18 @@ pub fn diagnose_plan(plan: &MountPlan) -> Vec<DiagnosticIssue> {
     }
     issues
 }
+
 pub fn execute(plan: &MountPlan, config: &config::Config) -> Result<ExecutionResult> {
     let mut magic_queue = plan.magic_module_paths.clone();
     let mut global_success_map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     let mut final_overlay_ids = HashSet::new();
     let mut final_hymo_ids = HashSet::new();
+    
     plan.overlay_module_ids.iter().for_each(|id| { final_overlay_ids.insert(id.clone()); });
     plan.hymo_module_ids.iter().for_each(|id| { final_hymo_ids.insert(id.clone()); });
+
     if !plan.hymo_ops.is_empty() {
-        if HymoFs::is_available() {
+         if HymoFs::is_available() {
             log::info!(">> Phase 1: HymoFS Injection...");
             if let Err(e) = HymoFs::clear() {
                 log::warn!("Failed to reset HymoFS rules: {}", e);
@@ -124,6 +136,7 @@ pub fn execute(plan: &MountPlan, config: &config::Config) -> Result<ExecutionRes
             }
         }
     }
+
     log::info!(">> Phase 2: OverlayFS Execution...");
     let overlay_results: Vec<OverlayResult> = plan.overlay_ops.par_iter()
         .map(|op| {
@@ -162,6 +175,7 @@ pub fn execute(plan: &MountPlan, config: &config::Config) -> Result<ExecutionRes
             }
         })
         .collect();
+
     for res in overlay_results {
         magic_queue.extend(res.magic_roots);
         for id in res.fallback_ids {
@@ -173,22 +187,35 @@ pub fn execute(plan: &MountPlan, config: &config::Config) -> Result<ExecutionRes
                 .insert(partition);
         }
     }
+
     magic_queue.sort();
     magic_queue.dedup();
     let mut final_magic_ids = Vec::new();
+
     if !magic_queue.is_empty() {
-        let tempdir = if let Some(t) = &config.tempdir { 
-            t.clone() 
+        let (tempdir, needs_mount) = if let Some(t) = &config.tempdir { 
+            (t.clone(), false)
         } else { 
-            utils::select_temp_dir()? 
+            (utils::select_temp_dir()?, true)
         };
+
         for path in &magic_queue {
             if let Some(name) = path.file_name() {
                 final_magic_ids.push(name.to_string_lossy().to_string());
             }
         }
-        log::info!(">> Phase 3: Magic Mount (Complementary Fallback) for {} modules...", magic_queue.len());
-        utils::ensure_temp_dir(&tempdir)?;
+        
+        log::info!(">> Phase 3: Magic Mount (Fallback) using {} (tmpfs_overlay={})", tempdir.display(), needs_mount);
+        
+        if needs_mount {
+            if !tempdir.exists() {
+                std::fs::create_dir_all(&tempdir)?;
+            }
+            utils::mount_tmpfs(&tempdir, "tmpfs")?;
+        } else {
+            utils::ensure_temp_dir(&tempdir)?;
+        }
+
         if let Err(e) = magic::mount_partitions(
             &tempdir, 
             &magic_queue, 
@@ -200,15 +227,23 @@ pub fn execute(plan: &MountPlan, config: &config::Config) -> Result<ExecutionRes
             log::error!("Magic Mount critical failure: {:#}", e);
             final_magic_ids.clear();
         }
-        utils::cleanup_temp_dir(&tempdir);
+
+        if needs_mount {
+            let _ = rustix::mount::unmount(&tempdir, UnmountFlags::DETACH);
+        } else {
+            utils::cleanup_temp_dir(&tempdir);
+        }
     }
+
     let mut result_overlay = final_overlay_ids.into_iter().collect::<Vec<_>>();
     let mut result_hymo = final_hymo_ids.into_iter().collect::<Vec<_>>();
     let mut result_magic = final_magic_ids;
+    
     result_overlay.sort();
     result_hymo.sort();
     result_magic.sort();
     result_magic.dedup();
+
     Ok(ExecutionResult {
         overlay_module_ids: result_overlay,
         hymo_module_ids: result_hymo,

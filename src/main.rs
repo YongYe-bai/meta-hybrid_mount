@@ -3,10 +3,13 @@ mod core;
 mod defs;
 mod mount;
 mod utils;
+
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use mimalloc::MiMalloc;
+use rustix::mount::UnmountFlags;
+
 use conf::{
     cli::{Cli, Commands},
     config::{Config, CONFIG_FILE_DEFAULT},
@@ -20,8 +23,11 @@ use core::{
     sync,
     modules,
 };
+use mount::magic;
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
 fn load_config(cli: &Cli) -> Result<Config> {
     if let Some(config_path) = &cli.config {
         return Config::from_file(config_path);
@@ -36,13 +42,16 @@ fn load_config(cli: &Cli) -> Result<Config> {
         }
     }
 }
+
 fn check_zygisksu_enforce_status() -> bool {
     std::fs::read_to_string("/data/adb/zygisksu/denylist_enforce")
         .map(|s| s.trim() != "0")
         .unwrap_or(false)
 }
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
+
     if let Some(command) = &cli.command {
         match command {
             Commands::GenConfig { output } => { 
@@ -92,6 +101,7 @@ fn run() -> Result<()> {
             }
         }
     }
+
     let mut config = load_config(&cli)?;
     config.merge_with_cli(
         cli.moduledir.clone(), 
@@ -101,6 +111,7 @@ fn run() -> Result<()> {
         cli.partitions.clone(),
         cli.dry_run,
     );
+
     if check_zygisksu_enforce_status() {
         if config.allow_umount_coexistence {
             if config.verbose {
@@ -113,15 +124,19 @@ fn run() -> Result<()> {
             config.disable_umount = true;
         }
     }
+
     if config.dry_run {
         env_logger::builder()
             .filter_level(if config.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info })
             .init();
+        
         log::info!(":: DRY-RUN / DIAGNOSTIC MODE ::");
         let module_list = inventory::scan(&config.moduledir, &config)?;
         log::info!(">> Inventory: Found {} modules", module_list.len());
+        
         let plan = planner::generate(&config, &module_list, &config.moduledir)?;
         plan.print_visuals();
+        
         log::info!(">> Analyzing File Conflicts...");
         let report = plan.analyze_conflicts();
         if report.details.is_empty() {
@@ -132,6 +147,7 @@ fn run() -> Result<()> {
                 log::warn!("   [{}] {} <== {:?}", c.partition, c.relative_path, c.contending_modules);
             }
         }
+
         log::info!(">> Running System Diagnostics...");
         let issues = executor::diagnose_plan(&plan);
         let mut critical_count = 0;
@@ -149,6 +165,7 @@ fn run() -> Result<()> {
                 }
             }
         }
+
         if critical_count > 0 {
             log::error!(">> ❌ DIAGNOSTICS FAILED: {} critical issues found.", critical_count);
             log::error!(">> Mounting now would likely result in a bootloop.");
@@ -158,32 +175,48 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+
     let _log_guard = utils::init_logging(config.verbose, Path::new(defs::DAEMON_LOG_FILE))?;
+    
     let camouflage_name = utils::random_kworker_name();
     if let Err(e) = utils::camouflage_process(&camouflage_name) {
         log::warn!("Failed to camouflage process: {}", e);
     }
+
     log::info!(">> Initializing Meta-Hybrid Mount Daemon...");
     log::debug!("Process camouflaged as: {}", camouflage_name);
+
     if config.disable_umount {
         log::warn!("!! Umount is DISABLED via config.");
     }
+
     utils::ensure_dir_exists(defs::RUN_DIR)?;
+
     let mnt_base = PathBuf::from(defs::FALLBACK_CONTENT_DIR);
     let img_path = Path::new(defs::BASE_DIR).join("modules.img");
+    
     let storage_handle = storage::setup(&mnt_base, &img_path, config.force_ext4, &config.mountsource)?;
     log::info!(">> Storage Backend: [{}]", storage_handle.mode.to_uppercase());
+
     let module_list = inventory::scan(&config.moduledir, &config)?;
     log::info!(">> Inventory Scan: Found {} enabled modules.", module_list.len());
+    
     sync::perform_sync(&module_list, &storage_handle.mount_point)?;
+
     let plan = planner::generate(&config, &module_list, &storage_handle.mount_point)?;
     plan.print_visuals();
+
     let active_mounts: Vec<String> = plan.overlay_ops
         .iter()
         .map(|op| op.partition_name.clone())
         .collect();
+
     log::info!(">> Link Start! Executing mount plan...");
+    
     let exec_result = executor::execute(&plan, &config)?;
+
+    let mut final_magic_ids = exec_result.magic_module_ids;
+    
     let mut nuke_active = false;
     if storage_handle.mode == "ext4" && config.enable_nuke {
         log::info!(">> Engaging Paw Pad Protocol (Stealth)...");
@@ -197,32 +230,38 @@ fn run() -> Result<()> {
             }
         }
     }
+
     modules::update_description(
         &storage_handle.mode, 
         nuke_active, 
         exec_result.overlay_module_ids.len(), 
-        exec_result.magic_module_ids.len(),
+        final_magic_ids.len(),
         exec_result.hymo_module_ids.len()
     );
+
     let storage_stats = storage::get_usage(&storage_handle.mount_point);
     let hymofs_available = storage::is_hymofs_active();
+    
     let state = RuntimeState::new(
         storage_handle.mode,
         storage_handle.mount_point,
         exec_result.overlay_module_ids,
-        exec_result.magic_module_ids,
+        final_magic_ids,
         exec_result.hymo_module_ids,
         nuke_active,
         active_mounts,
         storage_stats,
         hymofs_available
     );
+
     if let Err(e) = state.save() {
         log::error!("Failed to save runtime state: {}", e);
     }
+
     log::info!(">> System operational. Mount sequence complete.");
     Ok(())
 }
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {:#}", e);

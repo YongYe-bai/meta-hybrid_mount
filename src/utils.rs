@@ -23,11 +23,15 @@ use tracing_subscriber::{
 };
 use tracing_appender::non_blocking::WorkerGuard;
 use crate::defs;
+use crate::defs::TMPFS_CANDIDATES;
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use extattr::{Flags as XattrFlags, lsetxattr};
+
 const SELINUX_XATTR: &str = "security.selinux";
 const XATTR_TEST_FILE: &str = ".xattr_test";
 const DEFAULT_CONTEXT: &str = "u:object_r:system_file:s0";
+
 struct SimpleFormatter;
 impl<S, N> FormatEvent<S, N> for SimpleFormatter
 where
@@ -46,6 +50,7 @@ where
         writeln!(writer)
     }
 }
+
 pub fn init_logging(verbose: bool, log_path: &Path) -> Result<WorkerGuard> {
     if let Some(parent) = log_path.parent() {
         create_dir_all(parent)?;
@@ -87,6 +92,7 @@ pub fn init_logging(verbose: bool, log_path: &Path) -> Result<WorkerGuard> {
     }));
     Ok(guard)
 }
+
 pub fn lsetfilecon<P: AsRef<Path>>(path: P, con: &str) -> Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
@@ -102,6 +108,7 @@ pub fn lsetfilecon<P: AsRef<Path>>(path: P, con: &str) -> Result<()> {
     }
     Ok(())
 }
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn lgetfilecon<P: AsRef<Path>>(path: P) -> Result<String> {
     let con = extattr::lgetxattr(&path, SELINUX_XATTR).with_context(|| {
@@ -109,10 +116,12 @@ pub fn lgetfilecon<P: AsRef<Path>>(path: P) -> Result<String> {
     })?;
     Ok(String::from_utf8_lossy(&con).to_string())
 }
+
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub fn lgetfilecon<P: AsRef<Path>>(_path: P) -> Result<String> {
     Ok(DEFAULT_CONTEXT.to_string())
 }
+
 pub fn copy_path_context<S: AsRef<Path>, D: AsRef<Path>>(src: S, dst: D) -> Result<()> {
     let context = if src.as_ref().exists() {
         lgetfilecon(&src).unwrap_or_else(|_| DEFAULT_CONTEXT.to_string())
@@ -121,12 +130,14 @@ pub fn copy_path_context<S: AsRef<Path>, D: AsRef<Path>>(src: S, dst: D) -> Resu
     };
     lsetfilecon(dst, &context)
 }
+
 pub fn ensure_dir_exists<T: AsRef<Path>>(dir: T) -> Result<()> {
     if !dir.as_ref().exists() {
         create_dir_all(&dir)?;
     }
     Ok(())
 }
+
 pub fn camouflage_process(name: &str) -> Result<()> {
     let c_name = CString::new(name)?;
     unsafe {
@@ -134,6 +145,7 @@ pub fn camouflage_process(name: &str) -> Result<()> {
     }
     Ok(())
 }
+
 pub fn random_kworker_name() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -144,6 +156,7 @@ pub fn random_kworker_name() -> String {
     let y = (hash >> 4) % 10;
     format!("kworker/u{}:{}", x, y)
 }
+
 pub fn is_xattr_supported(path: &Path) -> bool {
     let test_file = path.join(XATTR_TEST_FILE);
     if let Err(e) = write(&test_file, b"test") {
@@ -155,6 +168,7 @@ pub fn is_xattr_supported(path: &Path) -> bool {
     let _ = remove_file(test_file);
     supported
 }
+
 pub fn is_mounted<P: AsRef<Path>>(path: P) -> bool {
     let path_str = path.as_ref().to_string_lossy();
     let search = path_str.trim_end_matches('/');
@@ -170,6 +184,7 @@ pub fn is_mounted<P: AsRef<Path>>(path: P) -> bool {
     }
     false
 }
+
 pub fn mount_tmpfs(target: &Path, source: &str) -> Result<()> {
     ensure_dir_exists(target)?;
     let data = CString::new("mode=0755")?;
@@ -177,6 +192,7 @@ pub fn mount_tmpfs(target: &Path, source: &str) -> Result<()> {
         .context("Failed to mount tmpfs")?;
     Ok(())
 }
+
 pub fn mount_image(image_path: &Path, target: &Path) -> Result<()> {
     ensure_dir_exists(target)?;
     lsetfilecon(image_path, "u:object_r:ksu_file:s0").ok();
@@ -191,6 +207,7 @@ pub fn mount_image(image_path: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
+
 pub fn repair_image(image_path: &Path) -> Result<()> {
     log::info!("Running e2fsck on {}", image_path.display());
     let status = Command::new("e2fsck")
@@ -205,6 +222,7 @@ pub fn repair_image(image_path: &Path) -> Result<()> {
     }
     Ok(())
 }
+
 fn native_cp_r(src: &Path, dst: &Path) -> Result<()> {
     if !dst.exists() {
         create_dir_all(dst)?;
@@ -233,6 +251,7 @@ fn native_cp_r(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
 pub fn sync_dir(src: &Path, dst: &Path) -> Result<()> {
     if !src.exists() { return Ok(()); }
     ensure_dir_exists(dst)?;
@@ -240,11 +259,34 @@ pub fn sync_dir(src: &Path, dst: &Path) -> Result<()> {
         format!("Failed to natively sync {} to {}", src.display(), dst.display())
     })
 }
+
+fn is_ok_empty<P: AsRef<Path>>(dir: P) -> bool {
+    if !dir.as_ref().exists() { return false; }
+    dir.as_ref()
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_none())
+}
+
+pub fn select_temp_dir() -> Result<PathBuf> {
+    for path_str in TMPFS_CANDIDATES {
+        let path = Path::new(path_str);
+        if is_ok_empty(path) {
+            log::info!("Selected dynamic temp root: {}", path.display());
+            return Ok(path.to_path_buf());
+        }
+    }
+    let run_dir = Path::new(defs::RUN_DIR);
+    ensure_dir_exists(run_dir)?;
+    let work_dir = run_dir.join("workdir");
+    Ok(work_dir)
+}
+
 pub fn cleanup_temp_dir(temp_dir: &Path) {
     if let Err(e) = remove_dir_all(temp_dir) {
         log::warn!("Failed to clean up temp dir {}: {:#}", temp_dir.display(), e);
     }
 }
+
 pub fn ensure_temp_dir(temp_dir: &Path) -> Result<()> {
     if temp_dir.exists() {
         remove_dir_all(temp_dir).ok();
@@ -252,19 +294,16 @@ pub fn ensure_temp_dir(temp_dir: &Path) -> Result<()> {
     create_dir_all(temp_dir)?;
     Ok(())
 }
-pub fn select_temp_dir() -> Result<PathBuf> {
-    let run_dir = Path::new(defs::RUN_DIR);
-    ensure_dir_exists(run_dir)?;
-    let work_dir = run_dir.join("workdir");
-    Ok(work_dir)
-}
+
 const KSU_INSTALL_MAGIC1: u32 = 0xDEADBEEF;
 const KSU_INSTALL_MAGIC2: u32 = 0xCAFEBABE;
 const KSU_IOCTL_NUKE_EXT4_SYSFS: u32 = 0x40004b11; 
 const KSU_IOCTL_ADD_TRY_UMOUNT: u32 = 0x40004b12; 
 static DRIVER_FD: OnceLock<RawFd> = OnceLock::new();
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 static SENT_UNMOUNTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
 #[repr(C)]
 struct KsuAddTryUmount {
     arg: u64,
@@ -275,6 +314,7 @@ struct KsuAddTryUmount {
 struct NukeExt4SysfsCmd {
     arg: u64,
 }
+
 fn grab_fd() -> i32 {
     let mut fd = -1;
     unsafe {
@@ -288,6 +328,7 @@ fn grab_fd() -> i32 {
     };
     fd
 }
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn send_unmountable<P>(target: P) -> Result<()>
 where
@@ -319,10 +360,12 @@ where
     };
     Ok(())
 }
+
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub fn send_unmountable<P>(_target: P) -> Result<()> {
     Ok(())
 }
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn ksu_nuke_sysfs(target: &str) -> Result<()> {
     let c_path = CString::new(target)?;
@@ -345,6 +388,7 @@ pub fn ksu_nuke_sysfs(target: &str) -> Result<()> {
     }
     Ok(())
 }
+
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub fn ksu_nuke_sysfs(_target: &str) -> Result<()> {
     bail!("Not supported on this OS")
