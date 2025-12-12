@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use mimalloc::MiMalloc;
-use rustix::mount::UnmountFlags;
 use serde::Serialize;
 
 use conf::{
@@ -24,7 +23,6 @@ use core::{
     sync,
     modules,
 };
-use mount::{magic, hymofs::HymoFs};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
