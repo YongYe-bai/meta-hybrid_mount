@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -9,7 +10,6 @@ use walkdir::WalkDir;
 
 const DEV_PATH: &str = "/dev/hymo_ctl";
 const HYMO_IOC_MAGIC: u8 = 0xE0;
-const EXPECTED_PROTOCOL_VERSION: i32 = 4;
 
 const _IOC_NRBITS: u32 = 8;
 const _IOC_TYPEBITS: u32 = 8;
@@ -124,6 +124,7 @@ impl HymoFs {
     }
 
     pub fn clear() -> Result<()> {
+        debug!("HymoFS: Clearing all rules");
         let file = Self::open_dev()?;
         let ret = unsafe {
             libc::ioctl(file.as_raw_fd(), ioc_clear_all())
@@ -136,6 +137,7 @@ impl HymoFs {
     }
 
     pub fn add_rule(src: &str, target: &str, type_val: i32) -> Result<()> {
+        debug!("HymoFS: ADD_RULE src='{}' target='{}' type={}", src, target, type_val);
         let file = Self::open_dev()?;
         let c_src = CString::new(src)?;
         let c_target = CString::new(target)?;
@@ -158,6 +160,7 @@ impl HymoFs {
     }
 
     pub fn delete_rule(src: &str) -> Result<()> {
+        debug!("HymoFS: DEL_RULE src='{}'", src);
         let file = Self::open_dev()?;
         let c_src = CString::new(src)?;
         
@@ -179,6 +182,7 @@ impl HymoFs {
     }
 
     pub fn hide_path(path: &str) -> Result<()> {
+        debug!("HymoFS: HIDE_RULE path='{}'", path);
         let file = Self::open_dev()?;
         let c_path = CString::new(path)?;
         
@@ -200,6 +204,7 @@ impl HymoFs {
     }
 
     pub fn inject_dir(dir: &str) -> Result<()> {
+        debug!("HymoFS: INJECT_DIR dir='{}'", dir);
         let file = Self::open_dev()?;
         let c_dir = CString::new(dir)?;
         
@@ -247,6 +252,11 @@ impl HymoFs {
             return Ok(());
         }
 
+        debug!("HymoFS: Scanning module dir: {} -> {}", module_dir.display(), target_base.display());
+
+        let mut injected_dirs = HashSet::new();
+        let mut pending_ops = Vec::new();
+
         for entry in WalkDir::new(module_dir).min_depth(1) {
             let entry = match entry {
                 Ok(e) => e,
@@ -256,7 +266,7 @@ impl HymoFs {
                 }
             };
 
-            let current_path = entry.path();
+            let current_path = entry.path().to_path_buf();
             let relative_path = match current_path.strip_prefix(module_dir) {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -265,6 +275,30 @@ impl HymoFs {
             let file_type = entry.file_type();
 
             if file_type.is_file() || file_type.is_symlink() {
+                if let Some(parent) = target_path.parent() {
+                    injected_dirs.insert(parent.to_string_lossy().to_string());
+                }
+                pending_ops.push((true, target_path, current_path));
+            } else if file_type.is_char_device() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.rdev() == 0 {
+                        if let Some(parent) = target_path.parent() {
+                            injected_dirs.insert(parent.to_string_lossy().to_string());
+                        }
+                        pending_ops.push((false, target_path, current_path));
+                    }
+                }
+            }
+        }
+
+        for dir in injected_dirs {
+            if let Err(e) = Self::inject_dir(&dir) {
+                 debug!("HymoFS: Inject dir '{}' warning: {}", dir, e);
+            }
+        }
+
+        for (is_add, target_path, current_path) in pending_ops {
+            if is_add {
                 if let Err(e) = Self::add_rule(
                     &target_path.to_string_lossy(),
                     &current_path.to_string_lossy(),
@@ -272,16 +306,13 @@ impl HymoFs {
                 ) {
                     warn!("Failed to add rule for {}: {}", target_path.display(), e);
                 }
-            } else if file_type.is_char_device() {
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.rdev() == 0 {
-                        if let Err(e) = Self::hide_path(&target_path.to_string_lossy()) {
-                            warn!("Failed to hide path {}: {}", target_path.display(), e);
-                        }
-                    }
+            } else {
+                if let Err(e) = Self::hide_path(&target_path.to_string_lossy()) {
+                    warn!("Failed to hide path {}: {}", target_path.display(), e);
                 }
             }
         }
+        
         Ok(())
     }
 
