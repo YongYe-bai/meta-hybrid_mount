@@ -21,6 +21,11 @@
   flex-direction: column;
   gap: 16px;
 }
+.storage-card-fixed {
+  flex-shrink: 0;
+  height: auto;
+  overflow: visible;
+}
 .card-header {
   display: flex;
   align-items: center;

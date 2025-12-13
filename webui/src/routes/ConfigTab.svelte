@@ -77,14 +77,14 @@
 
 <div class="config-container">
   <section class="config-group">
-    <div class="config-card">
+    <div class="config-card storage-card-fixed">
       <div class="card-header">
         <div class="card-icon">
           <md-icon><svg viewBox="0 0 24 24"><path d={ICONS.storage} /></svg></md-icon>
         </div>
         <div class="card-text">
           <span class="card-title">{store.L.status?.storageTitle ?? 'Storage'}</span>
-          <span class="card-desc">Configure paths</span>
+          <span class="card-desc">Configure module path</span>
         </div>
       </div>
       
@@ -98,10 +98,26 @@
         >
           <md-icon slot="leading-icon"><svg viewBox="0 0 24 24"><path d={ICONS.modules} /></svg></md-icon>
         </md-outlined-text-field>
+      </div>
+    </div>
+  </section>
 
+  <section class="config-group">
+    <div class="config-card storage-card-fixed">
+      <div class="card-header">
+        <div class="card-icon">
+          <md-icon><svg viewBox="0 0 24 24"><path d={ICONS.timer} /></svg></md-icon>
+        </div>
+        <div class="card-text">
+          <span class="card-title">{store.L.config.tempDir}</span>
+          <span class="card-desc">Configure temporary path</span>
+        </div>
+      </div>
+
+      <div class="input-stack">
         <md-outlined-text-field 
           label={store.L.config.tempDir} 
-          value={store.config.tempdir}
+          value={store.config.tempdir ?? ''}
           oninput={(e) => handleInput(e, 'tempdir')}
           placeholder={store.L.config.autoPlaceholder}
           error={invalidTempDir}
