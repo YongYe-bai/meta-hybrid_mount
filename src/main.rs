@@ -211,6 +211,7 @@ fn run() -> Result<()> {
 
     let _log_guard = utils::init_logging(config.verbose, Path::new(defs::DAEMON_LOG_FILE))?;
     
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     if crate::mount::hymofs::HymoFs::is_available() {
         if let Err(e) = crate::mount::hymofs::HymoFs::set_debug(config.verbose) {
             log::warn!("Failed to set HymoFS debug mode: {}", e);
@@ -281,6 +282,11 @@ fn run() -> Result<()> {
     let storage_stats = storage::get_usage(&storage_handle.mount_point);
     let hymofs_available = storage::is_hymofs_active();
     
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let hymofs_version = crate::mount::hymofs::HymoFs::get_version();
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let hymofs_version = None;
+    
     let state = RuntimeState::new(
         storage_handle.mode,
         storage_handle.mount_point,
@@ -290,7 +296,8 @@ fn run() -> Result<()> {
         nuke_active,
         active_mounts,
         storage_stats,
-        hymofs_available
+        hymofs_available,
+        hymofs_version
     );
 
     if let Err(e) = state.save() {

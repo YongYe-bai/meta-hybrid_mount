@@ -25,6 +25,8 @@ pub struct RuntimeState {
     pub storage_percent: u8,
     #[serde(default)]
     pub hymofs_available: bool,
+    #[serde(default)]
+    pub hymofs_version: Option<i32>,
 }
 impl RuntimeState {
     pub fn new(
@@ -37,6 +39,7 @@ impl RuntimeState {
         active_mounts: Vec<String>,
         storage_info: (u64, u64, u8),
         hymofs_available: bool,
+        hymofs_version: Option<i32>,
     ) -> Self {
         let start = SystemTime::now();
         let timestamp = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -55,6 +58,7 @@ impl RuntimeState {
             storage_used: storage_info.1,
             storage_percent: storage_info.2,
             hymofs_available,
+            hymofs_version,
         }
     }
     pub fn save(&self) -> Result<()> {
